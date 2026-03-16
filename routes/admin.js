@@ -440,6 +440,21 @@ router.get('/posts/:id', async (req, res) => {
   }
 });
 
+router.patch('/posts/:id', async (req, res) => {
+  try {
+    const update = {};
+    if (req.body?.title !== undefined) update.title = req.body.title;
+    if (req.body?.body !== undefined) update.body = req.body.body;
+    if (req.body?.author !== undefined) update.author = req.body.author;
+
+    const post = await Post.findByIdAndUpdate(req.params.id, update, { new: true }).populate('userId', 'fullName email');
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    res.json(post);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 router.delete('/posts/:id', async (req, res) => {
   try {
     const result = await Post.findByIdAndDelete(req.params.id);

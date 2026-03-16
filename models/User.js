@@ -13,6 +13,8 @@ const userSchema = new mongoose.Schema({
   sunSign: { type: String, default: '' },
   moonSign: { type: String, default: '' },
   risingSign: { type: String, default: '' },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+  isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {

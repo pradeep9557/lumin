@@ -2,11 +2,13 @@ const express = require('express');
 const PageContent = require('../models/PageContent');
 const Faq = require('../models/Faq');
 const SpiritualElement = require('../models/SpiritualElement');
-const { auth } = require('../middleware/auth');
+const User = require('../models/User');
+const { adminAuth } = require('../middleware/adminAuth');
 
 const router = express.Router();
-router.use(auth);
+router.use(adminAuth);
 
+// ── Slug helpers ─────────────────────────────────────────────
 const SLUG_MAP = {
   'help-support': 'help_support',
   'privacy-policy': 'privacy_policy',
@@ -17,11 +19,141 @@ function toDbSlug(urlSlug) {
   return SLUG_MAP[urlSlug] || urlSlug?.replace(/-/g, '_');
 }
 
+// ══════════════════════════════════════════════════════════════
+// DASHBOARD / STATS
+// ══════════════════════════════════════════════════════════════
+
 /**
- * Admin: create or update page content.
- * PUT /api/admin/pages/:slug
- * Body: { title?, content? }
+ * GET /api/admin/stats
+ * Returns counts for the dashboard
  */
+router.get('/stats', async (req, res) => {
+  try {
+    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments({ isActive: true }),
+      User.countDocuments({ isActive: false }),
+      Faq.countDocuments(),
+      SpiritualElement.countDocuments({ type: 'herb' }),
+      SpiritualElement.countDocuments({ type: 'crystal' }),
+      PageContent.countDocuments(),
+    ]);
+
+    // New users in last 7 days
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    const newUsersThisWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+
+    res.json({
+      totalUsers,
+      activeUsers,
+      disabledUsers,
+      newUsersThisWeek,
+      totalFaqs,
+      totalHerbs,
+      totalCrystals,
+      totalPages,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// USER MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/admin/users
+ * Query: search?, status? (active|disabled), page?, limit?
+ */
+router.get('/users', async (req, res) => {
+  try {
+    const { search, status, page = 1, limit = 20 } = req.query;
+    const filter = {};
+
+    if (status === 'active') filter.isActive = true;
+    if (status === 'disabled') filter.isActive = false;
+
+    if (search && search.trim()) {
+      const s = search.trim();
+      filter.$or = [
+        { fullName: new RegExp(s, 'i') },
+        { email: new RegExp(s, 'i') },
+        { phone: new RegExp(s, 'i') },
+      ];
+    }
+
+    const skip = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const [users, total] = await Promise.all([
+      User.find(filter).select('-password').sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      User.countDocuments(filter),
+    ]);
+
+    res.json({
+      users,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/users/:id
+ */
+router.get('/users/:id', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select('-password').lean();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/users/:id
+ * Body: { fullName?, email?, phone?, role?, isActive?, birthDate?, birthTime?, birthPlace?, birthCountry? }
+ */
+router.patch('/users/:id', async (req, res) => {
+  try {
+    const allowed = ['fullName', 'email', 'phone', 'role', 'isActive', 'birthDate', 'birthTime', 'birthPlace', 'birthCountry'];
+    const update = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) update[key] = req.body[key];
+    }
+
+    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/users/:id/toggle-status
+ * Toggles isActive true/false
+ */
+router.patch('/users/:id/toggle-status', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.isActive = !user.isActive;
+    await user.save();
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// PAGE CONTENT
+// ══════════════════════════════════════════════════════════════
+
 router.put('/pages/:slug', async (req, res) => {
   try {
     const dbSlug = toDbSlug(req.params.slug);
@@ -44,10 +176,6 @@ router.put('/pages/:slug', async (req, res) => {
   }
 });
 
-/**
- * Admin: list all page contents (optional).
- * GET /api/admin/pages
- */
 router.get('/pages', async (req, res) => {
   try {
     const pages = await PageContent.find().sort({ slug: 1 }).lean();
@@ -57,10 +185,10 @@ router.get('/pages', async (req, res) => {
   }
 });
 
-/**
- * Admin: list all FAQs (for help-support).
- * GET /api/admin/faqs
- */
+// ══════════════════════════════════════════════════════════════
+// FAQS
+// ══════════════════════════════════════════════════════════════
+
 router.get('/faqs', async (req, res) => {
   try {
     const faqs = await Faq.find().sort({ order: 1 }).lean();
@@ -70,11 +198,6 @@ router.get('/faqs', async (req, res) => {
   }
 });
 
-/**
- * Admin: create FAQ.
- * POST /api/admin/faqs
- * Body: { question, answer, order? }
- */
 router.post('/faqs', async (req, res) => {
   try {
     const { question, answer, order } = req.body || {};
@@ -88,11 +211,6 @@ router.post('/faqs', async (req, res) => {
   }
 });
 
-/**
- * Admin: update FAQ.
- * PATCH /api/admin/faqs/:id
- * Body: { question?, answer?, order? }
- */
 router.patch('/faqs/:id', async (req, res) => {
   try {
     const update = {};
@@ -108,10 +226,6 @@ router.patch('/faqs/:id', async (req, res) => {
   }
 });
 
-/**
- * Admin: delete FAQ.
- * DELETE /api/admin/faqs/:id
- */
 router.delete('/faqs/:id', async (req, res) => {
   try {
     const result = await Faq.findByIdAndDelete(req.params.id);
@@ -122,11 +236,10 @@ router.delete('/faqs/:id', async (req, res) => {
   }
 });
 
-/**
- * Admin: list all spiritual elements (herbs & crystals).
- * GET /api/admin/spiritual-elements
- * Query: type?, search?
- */
+// ══════════════════════════════════════════════════════════════
+// SPIRITUAL ELEMENTS
+// ══════════════════════════════════════════════════════════════
+
 router.get('/spiritual-elements', async (req, res) => {
   try {
     const { type, search } = req.query || {};
@@ -147,10 +260,6 @@ router.get('/spiritual-elements', async (req, res) => {
   }
 });
 
-/**
- * Admin: get one spiritual element.
- * GET /api/admin/spiritual-elements/:id
- */
 router.get('/spiritual-elements/:id', async (req, res) => {
   try {
     const item = await SpiritualElement.findById(req.params.id).lean();
@@ -161,11 +270,6 @@ router.get('/spiritual-elements/:id', async (req, res) => {
   }
 });
 
-/**
- * Admin: create spiritual element (herb or crystal).
- * POST /api/admin/spiritual-elements
- * Body: { name, type: 'herb'|'crystal', description, tag?, iconUrl?, order? }
- */
 router.post('/spiritual-elements', async (req, res) => {
   try {
     const { name, type, description, tag, iconUrl, order } = req.body || {};
@@ -189,11 +293,6 @@ router.post('/spiritual-elements', async (req, res) => {
   }
 });
 
-/**
- * Admin: update spiritual element.
- * PATCH /api/admin/spiritual-elements/:id
- * Body: { name?, type?, description?, tag?, iconUrl?, order? }
- */
 router.patch('/spiritual-elements/:id', async (req, res) => {
   try {
     const { name, type, description, tag, iconUrl, order } = req.body || {};
@@ -218,10 +317,6 @@ router.patch('/spiritual-elements/:id', async (req, res) => {
   }
 });
 
-/**
- * Admin: delete spiritual element.
- * DELETE /api/admin/spiritual-elements/:id
- */
 router.delete('/spiritual-elements/:id', async (req, res) => {
   try {
     const result = await SpiritualElement.findByIdAndDelete(req.params.id);

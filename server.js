@@ -47,7 +47,15 @@ app.use('/api/pages', pagesRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true });
+  const dbState = mongoose.connection.readyState; // 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
+  const isDbConnected = dbState === 1;
+  const status = isDbConnected ? 200 : 503;
+  res.status(status).json({
+    ok: isDbConnected,
+    uptime: Math.floor(process.uptime()),
+    db: isDbConnected ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

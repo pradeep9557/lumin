@@ -374,6 +374,20 @@ router.get('/journals/:id', async (req, res) => {
   }
 });
 
+router.patch('/journals/:id', async (req, res) => {
+  try {
+    const update = {};
+    if (req.body?.title !== undefined) update.title = req.body.title;
+    if (req.body?.body !== undefined) update.body = req.body.body;
+
+    const entry = await JournalEntry.findByIdAndUpdate(req.params.id, update, { new: true }).populate('userId', 'fullName email');
+    if (!entry) return res.status(404).json({ message: 'Journal entry not found' });
+    res.json(entry);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 router.delete('/journals/:id', async (req, res) => {
   try {
     const result = await JournalEntry.findByIdAndDelete(req.params.id);

@@ -3,6 +3,8 @@ const PageContent = require('../models/PageContent');
 const Faq = require('../models/Faq');
 const SpiritualElement = require('../models/SpiritualElement');
 const User = require('../models/User');
+const JournalEntry = require('../models/JournalEntry');
+const Post = require('../models/Post');
 const { adminAuth } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -29,7 +31,7 @@ function toDbSlug(urlSlug) {
  */
 router.get('/stats', async (req, res) => {
   try {
-    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages] = await Promise.all([
+    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages, totalPosts, totalJournals] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ isActive: true }),
       User.countDocuments({ isActive: false }),
@@ -37,6 +39,8 @@ router.get('/stats', async (req, res) => {
       SpiritualElement.countDocuments({ type: 'herb' }),
       SpiritualElement.countDocuments({ type: 'crystal' }),
       PageContent.countDocuments(),
+      Post.countDocuments(),
+      JournalEntry.countDocuments(),
     ]);
 
     // New users in last 7 days
@@ -53,6 +57,8 @@ router.get('/stats', async (req, res) => {
       totalHerbs,
       totalCrystals,
       totalPages,
+      totalPosts,
+      totalJournals,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -321,6 +327,121 @@ router.delete('/spiritual-elements/:id', async (req, res) => {
   try {
     const result = await SpiritualElement.findByIdAndDelete(req.params.id);
     if (!result) return res.status(404).json({ message: 'Spiritual element not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// JOURNAL ENTRIES
+// ══════════════════════════════════════════════════════════════
+
+router.get('/journals', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 20 } = req.query;
+    const filter = {};
+    if (search && search.trim()) {
+      const s = search.trim();
+      filter.$or = [
+        { title: new RegExp(s, 'i') },
+        { body: new RegExp(s, 'i') },
+      ];
+    }
+    const skip = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const [entries, total] = await Promise.all([
+      JournalEntry.find(filter).populate('userId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      JournalEntry.countDocuments(filter),
+    ]);
+    res.json({
+      entries,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/journals/:id', async (req, res) => {
+  try {
+    const entry = await JournalEntry.findById(req.params.id).populate('userId', 'fullName email').lean();
+    if (!entry) return res.status(404).json({ message: 'Journal entry not found' });
+    res.json(entry);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.delete('/journals/:id', async (req, res) => {
+  try {
+    const result = await JournalEntry.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ message: 'Journal entry not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// POSTS (Community)
+// ══════════════════════════════════════════════════════════════
+
+router.get('/posts', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 20 } = req.query;
+    const filter = {};
+    if (search && search.trim()) {
+      const s = search.trim();
+      filter.$or = [
+        { title: new RegExp(s, 'i') },
+        { body: new RegExp(s, 'i') },
+        { author: new RegExp(s, 'i') },
+      ];
+    }
+    const skip = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const [posts, total] = await Promise.all([
+      Post.find(filter).populate('userId', 'fullName email').sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Post.countDocuments(filter),
+    ]);
+    res.json({
+      posts,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/posts/:id', async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id).populate('userId', 'fullName email').populate('comments.userId', 'fullName email').lean();
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    res.json(post);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.delete('/posts/:id', async (req, res) => {
+  try {
+    const result = await Post.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ message: 'Post not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.delete('/posts/:postId/comments/:commentId', async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.postId);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    post.comments = post.comments.filter((c) => c._id.toString() !== req.params.commentId);
+    await post.save();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ message: err.message });

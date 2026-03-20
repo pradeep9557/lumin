@@ -16,6 +16,7 @@ const cosmicRoutes = require('./routes/cosmic');
 const journalRoutes = require('./routes/journal');
 const pagesRoutes = require('./routes/pages');
 const adminRoutes = require('./routes/admin');
+const settingsRoutes = require('./routes/settings');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,6 +46,7 @@ app.use('/api/cosmic', cosmicRoutes);
 app.use('/api/journal', journalRoutes);
 app.use('/api/pages', pagesRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/settings', settingsRoutes);
 
 app.get('/api/health', (req, res) => {
   const dbState = mongoose.connection.readyState; // 0=disconnected, 1=connected, 2=connecting, 3=disconnecting

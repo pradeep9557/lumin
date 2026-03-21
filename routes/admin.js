@@ -246,6 +246,17 @@ router.delete('/faqs/:id', async (req, res) => {
 // SPIRITUAL ELEMENTS
 // ══════════════════════════════════════════════════════════════
 
+router.get('/spiritual-elements/categories', async (req, res) => {
+  try {
+    const categories = await SpiritualElement.distinct('category');
+    const defaults = ['Crystals', 'Tarot', 'Meditation', 'Books', 'Aromatherapy', 'Decor'];
+    const merged = [...new Set([...defaults, ...categories.filter(Boolean)])].sort();
+    res.json(merged);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 router.get('/spiritual-elements', async (req, res) => {
   try {
     const { type, search } = req.query || {};
@@ -278,7 +289,7 @@ router.get('/spiritual-elements/:id', async (req, res) => {
 
 router.post('/spiritual-elements', async (req, res) => {
   try {
-    const { name, type, description, tag, iconUrl, order } = req.body || {};
+    const { name, type, description, tag, iconUrl, order, category, price, stock, sku, images, status } = req.body || {};
     if (!name || !type || !description) {
       return res.status(400).json({ message: 'name, type (herb|crystal), and description required' });
     }
@@ -292,6 +303,12 @@ router.post('/spiritual-elements', async (req, res) => {
       tag: (tag || '').trim(),
       iconUrl: (iconUrl || '').trim(),
       order: order != null ? Number(order) : 0,
+      category: (category || '').trim(),
+      price: price != null ? Number(price) : 0,
+      stock: stock != null ? Number(stock) : 0,
+      sku: (sku || '').trim(),
+      images: images || [],
+      status: status || 'active',
     });
     res.status(201).json(item);
   } catch (err) {
@@ -301,7 +318,7 @@ router.post('/spiritual-elements', async (req, res) => {
 
 router.patch('/spiritual-elements/:id', async (req, res) => {
   try {
-    const { name, type, description, tag, iconUrl, order } = req.body || {};
+    const { name, type, description, tag, iconUrl, order, category, price, stock, sku, images, status } = req.body || {};
     const update = {};
     if (name !== undefined) update.name = name.trim();
     if (type !== undefined) {
@@ -314,6 +331,12 @@ router.patch('/spiritual-elements/:id', async (req, res) => {
     if (tag !== undefined) update.tag = tag.trim();
     if (iconUrl !== undefined) update.iconUrl = iconUrl.trim();
     if (order !== undefined) update.order = Number(order);
+    if (category !== undefined) update.category = category.trim();
+    if (price !== undefined) update.price = Number(price);
+    if (stock !== undefined) update.stock = Number(stock);
+    if (sku !== undefined) update.sku = sku.trim();
+    if (images !== undefined) update.images = images;
+    if (status !== undefined) update.status = status;
 
     const item = await SpiritualElement.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!item) return res.status(404).json({ message: 'Spiritual element not found' });

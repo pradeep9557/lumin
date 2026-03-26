@@ -131,9 +131,17 @@ router.post('/posts/:id/comments', auth, async (req, res) => {
       text: text.trim(),
     });
     await post.save();
-    const newComment = post.comments[post.comments.length - 1];
-    newComment.timeAgo = 'Just now';
-    res.status(201).json(newComment);
+    const raw = post.comments[post.comments.length - 1];
+    res.status(201).json({
+      _id: raw._id,
+      userId: raw.userId,
+      author: raw.author,
+      text: raw.text,
+      likes: raw.likes || 0,
+      likedBy: (raw.likedBy || []).map(String),
+      timeAgo: 'Just now',
+      createdAt: raw.createdAt,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

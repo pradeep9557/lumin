@@ -26,6 +26,7 @@ router.get('/posts', auth, async (req, res) => {
       author: p.author,
       timeAgo: timeAgo(p.createdAt),
       likes: p.likes || 0,
+      likedBy: (p.likedBy || []).map(String),
       comments: (p.comments || []).length,
     }));
     if (list.length === 0) {
@@ -55,11 +56,23 @@ router.get('/posts/:id', auth, async (req, res) => {
     const post = await Post.findById(req.params.id).lean();
     if (!post) return res.status(404).json({ message: 'Post not found' });
     const comments = (post.comments || []).map((c) => ({
-      ...c,
+      _id: c._id,
+      userId: c.userId,
+      author: c.author,
+      text: c.text,
+      likes: c.likes || 0,
+      likedBy: (c.likedBy || []).map(String),
       timeAgo: timeAgo(c.createdAt),
+      createdAt: c.createdAt,
     }));
     res.json({
-      ...post,
+      _id: post._id,
+      userId: post.userId,
+      title: post.title,
+      body: post.body,
+      author: post.author,
+      likes: post.likes || 0,
+      likedBy: (post.likedBy || []).map(String),
       timeAgo: timeAgo(post.createdAt),
       comments,
     });
@@ -121,6 +134,31 @@ router.post('/posts/:id/comments', auth, async (req, res) => {
     const newComment = post.comments[post.comments.length - 1];
     newComment.timeAgo = 'Just now';
     res.status(201).json(newComment);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Toggle like on a comment
+router.post('/posts/:id/comments/:commentId/like', auth, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    const comment = post.comments.id(req.params.commentId);
+    if (!comment) return res.status(404).json({ message: 'Comment not found' });
+    const uid = req.user._id.toString();
+    const likedBy = comment.likedBy || [];
+    const idx = likedBy.map(String).indexOf(uid);
+    if (idx >= 0) {
+      comment.likedBy.splice(idx, 1);
+      comment.likes = Math.max(0, (comment.likes || 0) - 1);
+    } else {
+      comment.likedBy = comment.likedBy || [];
+      comment.likedBy.push(req.user._id);
+      comment.likes = (comment.likes || 0) + 1;
+    }
+    await post.save();
+    res.json({ likes: comment.likes, commentId: comment._id });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

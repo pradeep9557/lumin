@@ -1,0 +1,296 @@
+From b6338ea85d3900838afe7bc380b7ad42525f2e7e Mon Sep 17 00:00:00 2001
+From: Pradeep Kumar <pradeepkumar@appypiellp.com>
+Date: Thu, 2 Apr 2026 15:55:36 +0530
+Subject: [PATCH] stock management, user order cancellation, and dashboard
+ order stats
+
+- Add stock validation before adding to cart and placing orders
+- Auto-decrement stock on order placement, restore on cancellation
+- Add user cancel order endpoint (PATCH /api/orders/:orderId/cancel)
+- Only allow cancellation for pending/confirmed orders
+- Add order/revenue stats to admin dashboard endpoint
+- Add recent orders and top selling products to stats
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ routes/admin.js  | 80 +++++++++++++++++++++++++++++++++++++++++++++++-
+ routes/cart.js   | 28 +++++++++++++++++
+ routes/orders.js | 71 ++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 178 insertions(+), 1 deletion(-)
+
+diff --git a/routes/admin.js b/routes/admin.js
+index 1c4d9e4..8a48407 100644
+--- a/routes/admin.js
++++ b/routes/admin.js
+@@ -32,7 +32,9 @@ function toDbSlug(urlSlug) {
+  */
+ router.get('/stats', async (req, res) => {
+   try {
+-    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages, totalPosts, totalJournals] = await Promise.all([
++    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages, totalPosts, totalJournals,
++      totalOrders, pendingOrders, confirmedOrders, shippedOrders, deliveredOrders, cancelledOrders,
++    ] = await Promise.all([
+       User.countDocuments(),
+       User.countDocuments({ isActive: true }),
+       User.countDocuments({ isActive: false }),
+@@ -42,6 +44,12 @@ router.get('/stats', async (req, res) => {
+       PageContent.countDocuments(),
+       Post.countDocuments(),
+       JournalEntry.countDocuments(),
++      Order.countDocuments(),
++      Order.countDocuments({ status: 'pending' }),
++      Order.countDocuments({ status: 'confirmed' }),
++      Order.countDocuments({ status: 'shipped' }),
++      Order.countDocuments({ status: 'delivered' }),
++      Order.countDocuments({ status: 'cancelled' }),
+     ]);
+ 
+     // New users in last 7 days
+@@ -49,6 +57,38 @@ router.get('/stats', async (req, res) => {
+     weekAgo.setDate(weekAgo.getDate() - 7);
+     const newUsersThisWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+ 
++    // Revenue from delivered/shipped/confirmed orders (not cancelled/refunded)
++    const revenueResult = await Order.aggregate([
++      { $match: { status: { $nin: ['cancelled'] }, paymentStatus: { $ne: 'refunded' } } },
++      { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } },
++    ]);
++    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
++
++    // Orders this week
++    const ordersThisWeek = await Order.countDocuments({ createdAt: { $gte: weekAgo } });
++
++    // Recent orders (last 5)
++    const recentOrders = await Order.find()
++      .populate('user', 'fullName email')
++      .sort({ createdAt: -1 })
++      .limit(5)
++      .lean();
++
++    // Top selling products
++    const topProducts = await Order.aggregate([
++      { $match: { status: { $nin: ['cancelled'] } } },
++      { $unwind: '$items' },
++      { $group: {
++        _id: '$items.product',
++        name: { $first: '$items.name' },
++        type: { $first: '$items.type' },
++        totalSold: { $sum: '$items.quantity' },
++        totalRevenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
++      }},
++      { $sort: { totalSold: -1 } },
++      { $limit: 5 },
++    ]);
++
+     res.json({
+       totalUsers,
+       activeUsers,
+@@ -60,6 +100,17 @@ router.get('/stats', async (req, res) => {
+       totalPages,
+       totalPosts,
+       totalJournals,
++      // Order stats
++      totalOrders,
++      pendingOrders,
++      confirmedOrders,
++      shippedOrders,
++      deliveredOrders,
++      cancelledOrders,
++      totalRevenue,
++      ordersThisWeek,
++      recentOrders,
++      topProducts,
+     });
+   } catch (err) {
+     res.status(500).json({ message: err.message });
+@@ -253,6 +304,7 @@ router.patch('/orders/:id/status', async (req, res) => {
+     const order = await Order.findById(req.params.id);
+     if (!order) return res.status(404).json({ message: 'Order not found' });
+ 
++    const previousStatus = order.status;
+     order.status = status;
+ 
+     // If shipped and no shippedAt date is set, set it now
+@@ -261,6 +313,32 @@ router.patch('/orders/:id/status', async (req, res) => {
+       order.trackingInfo.shippedAt = new Date();
+     }
+ 
++    // Restore stock when order is cancelled (only if it wasn't already cancelled)
++    if (status === 'cancelled' && previousStatus !== 'cancelled') {
++      for (const item of order.items) {
++        await SpiritualElement.findByIdAndUpdate(item.product, {
++          $inc: { stock: item.quantity },
++        });
++      }
++    }
++
++    // If un-cancelling an order (changing from cancelled to another status), decrement stock again
++    if (previousStatus === 'cancelled' && status !== 'cancelled') {
++      for (const item of order.items) {
++        const product = await SpiritualElement.findById(item.product);
++        if (product && product.stock < item.quantity) {
++          return res.status(400).json({
++            message: `Cannot restore order: ${item.name} only has ${product.stock} unit(s) in stock`,
++          });
++        }
++      }
++      for (const item of order.items) {
++        await SpiritualElement.findByIdAndUpdate(item.product, {
++          $inc: { stock: -item.quantity },
++        });
++      }
++    }
++
+     await order.save();
+     const updated = await Order.findById(order._id).populate('user', 'fullName email phone').lean();
+     res.json({ order: updated });
+diff --git a/routes/cart.js b/routes/cart.js
+index b893571..27a9065 100644
+--- a/routes/cart.js
++++ b/routes/cart.js
+@@ -33,6 +33,11 @@ router.post('/add', auth, async (req, res) => {
+       return res.status(404).json({ message: 'Product not found' });
+     }
+ 
++    // Check if product is active
++    if (product.status !== 'active') {
++      return res.status(400).json({ message: 'This product is currently unavailable' });
++    }
++
+     let cart = await Cart.findOne({ user: req.user._id });
+     if (!cart) {
+       cart = new Cart({ user: req.user._id, items: [] });
+@@ -43,6 +48,21 @@ router.post('/add', auth, async (req, res) => {
+       (item) => item.product.toString() === productId
+     );
+ 
++    // Calculate total quantity (existing + new)
++    const currentQty = existingIndex >= 0 ? cart.items[existingIndex].quantity : 0;
++    const requestedQty = currentQty + quantity;
++
++    // Check stock availability
++    if (product.stock <= 0) {
++      return res.status(400).json({ message: 'This product is out of stock' });
++    }
++    if (requestedQty > product.stock) {
++      return res.status(400).json({
++        message: `Only ${product.stock} unit(s) available in stock${currentQty > 0 ? ` (you already have ${currentQty} in cart)` : ''}`,
++        availableStock: product.stock,
++      });
++    }
++
+     if (existingIndex >= 0) {
+       cart.items[existingIndex].quantity += quantity;
+     } else {
+@@ -89,6 +109,14 @@ router.put('/update', auth, async (req, res) => {
+     if (quantity <= 0) {
+       cart.items.splice(itemIndex, 1);
+     } else {
++      // Check stock before updating quantity
++      const product = await SpiritualElement.findById(cart.items[itemIndex].product);
++      if (product && quantity > product.stock) {
++        return res.status(400).json({
++          message: `Only ${product.stock} unit(s) available in stock`,
++          availableStock: product.stock,
++        });
++      }
+       cart.items[itemIndex].quantity = quantity;
+     }
+ 
+diff --git a/routes/orders.js b/routes/orders.js
+index 086c2e9..d8706e6 100644
+--- a/routes/orders.js
++++ b/routes/orders.js
+@@ -3,6 +3,7 @@ const router = express.Router();
+ const { auth } = require('../middleware/auth');
+ const Order = require('../models/Order');
+ const Cart = require('../models/Cart');
++const SpiritualElement = require('../models/SpiritualElement');
+ 
+ // POST /api/orders — Create a new order from cart
+ router.post('/', auth, async (req, res) => {
+@@ -26,6 +27,31 @@ router.post('/', auth, async (req, res) => {
+       return res.status(400).json({ message: 'Cart is empty' });
+     }
+ 
++    // Validate stock availability for all items before placing order
++    const stockErrors = [];
++    for (const item of cart.items) {
++      const product = await SpiritualElement.findById(item.product);
++      if (!product) {
++        stockErrors.push(`${item.name} is no longer available`);
++      } else if (product.stock < item.quantity) {
++        stockErrors.push(
++          product.stock === 0
++            ? `${item.name} is out of stock`
++            : `${item.name} only has ${product.stock} unit(s) left (you requested ${item.quantity})`
++        );
++      }
++    }
++    if (stockErrors.length > 0) {
++      return res.status(400).json({ message: stockErrors.join('. '), stockErrors });
++    }
++
++    // Decrement stock for all items
++    for (const item of cart.items) {
++      await SpiritualElement.findByIdAndUpdate(item.product, {
++        $inc: { stock: -item.quantity },
++      });
++    }
++
+     // Create the order
+     const order = new Order({
+       user: req.user._id,
+@@ -99,4 +125,49 @@ router.get('/:orderId', auth, async (req, res) => {
+   }
+ });
+ 
++// PATCH /api/orders/:orderId/cancel — Cancel an order (user-initiated)
++router.patch('/:orderId/cancel', auth, async (req, res) => {
++  try {
++    const order = await Order.findOne({
++      orderId: req.params.orderId,
++      user: req.user._id,
++    });
++
++    if (!order) {
++      return res.status(404).json({ message: 'Order not found' });
++    }
++
++    // Only allow cancellation for pending or confirmed orders
++    const cancellableStatuses = ['pending', 'confirmed'];
++    if (!cancellableStatuses.includes(order.status)) {
++      return res.status(400).json({
++        message: `Cannot cancel this order. Orders can only be cancelled when status is "Pending" or "Confirmed". Current status: "${order.status}".`,
++      });
++    }
++
++    // Restore stock for all items
++    for (const item of order.items) {
++      await SpiritualElement.findByIdAndUpdate(item.product, {
++        $inc: { stock: item.quantity },
++      });
++    }
++
++    order.status = 'cancelled';
++    await order.save();
++
++    res.json({
++      message: 'Order cancelled successfully',
++      order: {
++        orderId: order.orderId,
++        _id: order._id,
++        status: order.status,
++        totalAmount: order.totalAmount,
++      },
++    });
++  } catch (err) {
++    console.error('Cancel order error:', err);
++    res.status(500).json({ message: 'Failed to cancel order' });
++  }
++});
++
+ module.exports = router;
+-- 
+2.34.1
+

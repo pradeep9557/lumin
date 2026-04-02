@@ -37,6 +37,14 @@ const orderSchema = new mongoose.Schema({
     default: 'pending',
   },
   notes: { type: String, default: '' },
+  trackingInfo: {
+    trackingNumber: { type: String, default: '' },
+    carrier: { type: String, default: '' },
+    trackingUrl: { type: String, default: '' },
+    shippedAt: { type: Date, default: null },
+    estimatedDelivery: { type: String, default: '' },
+    notes: { type: String, default: '' },
+  },
 }, { timestamps: true });
 
 // Generate a unique orderId before saving

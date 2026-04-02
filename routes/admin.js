@@ -5,6 +5,7 @@ const SpiritualElement = require('../models/SpiritualElement');
 const User = require('../models/User');
 const JournalEntry = require('../models/JournalEntry');
 const Post = require('../models/Post');
+const Order = require('../models/Order');
 const { adminAuth } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -151,6 +152,176 @@ router.patch('/users/:id/toggle-status', async (req, res) => {
     user.isActive = !user.isActive;
     await user.save();
     res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// ORDER MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/admin/orders
+ * Query: search?, status?, page?, limit?
+ */
+router.get('/orders', async (req, res) => {
+  try {
+    const { search, status, page = 1, limit = 20 } = req.query;
+    const filter = {};
+
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    if (search && search.trim()) {
+      const s = search.trim();
+      filter.$or = [
+        { orderId: new RegExp(s, 'i') },
+        { 'shippingInfo.fullName': new RegExp(s, 'i') },
+        { 'shippingInfo.email': new RegExp(s, 'i') },
+      ];
+    }
+
+    const skip = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .populate('user', 'fullName email phone')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+      Order.countDocuments(filter),
+    ]);
+
+    // Also get status counts for stats
+    const [totalOrders, pendingCount, confirmedCount, shippedCount, deliveredCount, cancelledCount] = await Promise.all([
+      Order.countDocuments(),
+      Order.countDocuments({ status: 'pending' }),
+      Order.countDocuments({ status: 'confirmed' }),
+      Order.countDocuments({ status: 'shipped' }),
+      Order.countDocuments({ status: 'delivered' }),
+      Order.countDocuments({ status: 'cancelled' }),
+    ]);
+
+    res.json({
+      orders,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / Number(limit)),
+      stats: {
+        totalOrders,
+        pending: pendingCount,
+        confirmed: confirmedCount,
+        shipped: shippedCount,
+        delivered: deliveredCount,
+        cancelled: cancelledCount,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/orders/:id
+ */
+router.get('/orders/:id', async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'fullName email phone')
+      .lean();
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.json({ order });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/orders/:id/status
+ * Body: { status }
+ */
+router.patch('/orders/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const validStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: `Invalid status. Use: ${validStatuses.join(', ')}` });
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    order.status = status;
+
+    // If shipped and no shippedAt date is set, set it now
+    if (status === 'shipped' && (!order.trackingInfo || !order.trackingInfo.shippedAt)) {
+      if (!order.trackingInfo) order.trackingInfo = {};
+      order.trackingInfo.shippedAt = new Date();
+    }
+
+    await order.save();
+    const updated = await Order.findById(order._id).populate('user', 'fullName email phone').lean();
+    res.json({ order: updated });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/orders/:id/tracking
+ * Body: { trackingNumber, carrier, trackingUrl, estimatedDelivery, notes }
+ */
+router.patch('/orders/:id/tracking', async (req, res) => {
+  try {
+    const { trackingNumber, carrier, trackingUrl, estimatedDelivery, notes } = req.body;
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    // Update tracking info
+    if (!order.trackingInfo) order.trackingInfo = {};
+    if (trackingNumber !== undefined) order.trackingInfo.trackingNumber = trackingNumber;
+    if (carrier !== undefined) order.trackingInfo.carrier = carrier;
+    if (trackingUrl !== undefined) order.trackingInfo.trackingUrl = trackingUrl;
+    if (estimatedDelivery !== undefined) order.trackingInfo.estimatedDelivery = estimatedDelivery;
+    if (notes !== undefined) order.trackingInfo.notes = notes;
+
+    // If tracking number is provided and status is not yet shipped, update to shipped
+    if (trackingNumber && !['shipped', 'delivered'].includes(order.status)) {
+      order.status = 'shipped';
+      order.trackingInfo.shippedAt = new Date();
+    }
+
+    await order.save();
+    const updated = await Order.findById(order._id).populate('user', 'fullName email phone').lean();
+    res.json({ order: updated });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/orders/:id/payment-status
+ * Body: { paymentStatus }
+ */
+router.patch('/orders/:id/payment-status', async (req, res) => {
+  try {
+    const { paymentStatus } = req.body;
+    const validStatuses = ['pending', 'paid', 'failed', 'refunded'];
+    if (!validStatuses.includes(paymentStatus)) {
+      return res.status(400).json({ message: `Invalid payment status. Use: ${validStatuses.join(', ')}` });
+    }
+
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { paymentStatus },
+      { new: true }
+    ).populate('user', 'fullName email phone').lean();
+
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.json({ order });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

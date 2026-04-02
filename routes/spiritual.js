@@ -27,7 +27,7 @@ router.get('/herbs', auth, async (req, res) => {
     const filter = buildFilter('herb', search);
     const list = await SpiritualElement.find(filter)
       .sort({ order: 1, name: 1 })
-      .select('_id name tag description iconUrl')
+      .select('_id name tag description iconUrl price stock')
       .lean();
     res.json(list);
   } catch (err) {
@@ -45,7 +45,7 @@ router.get('/crystals', auth, async (req, res) => {
     const filter = buildFilter('crystal', search);
     const list = await SpiritualElement.find(filter)
       .sort({ order: 1, name: 1 })
-      .select('_id name tag description iconUrl')
+      .select('_id name tag description iconUrl price stock')
       .lean();
     res.json(list);
   } catch (err) {
@@ -60,7 +60,7 @@ router.get('/crystals', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const item = await SpiritualElement.findById(req.params.id)
-      .select('_id name type tag description iconUrl')
+      .select('_id name type tag description iconUrl price stock')
       .lean();
     if (!item) return res.status(404).json({ message: 'Not found' });
     res.json(item);

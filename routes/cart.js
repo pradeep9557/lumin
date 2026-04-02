@@ -33,6 +33,11 @@ router.post('/add', auth, async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
+    // Check if product is active
+    if (product.status !== 'active') {
+      return res.status(400).json({ message: 'This product is currently unavailable' });
+    }
+
     let cart = await Cart.findOne({ user: req.user._id });
     if (!cart) {
       cart = new Cart({ user: req.user._id, items: [] });
@@ -42,6 +47,21 @@ router.post('/add', auth, async (req, res) => {
     const existingIndex = cart.items.findIndex(
       (item) => item.product.toString() === productId
     );
+
+    // Calculate total quantity (existing + new)
+    const currentQty = existingIndex >= 0 ? cart.items[existingIndex].quantity : 0;
+    const requestedQty = currentQty + quantity;
+
+    // Check stock availability
+    if (product.stock <= 0) {
+      return res.status(400).json({ message: 'This product is out of stock' });
+    }
+    if (requestedQty > product.stock) {
+      return res.status(400).json({
+        message: `Only ${product.stock} unit(s) available in stock${currentQty > 0 ? ` (you already have ${currentQty} in cart)` : ''}`,
+        availableStock: product.stock,
+      });
+    }
 
     if (existingIndex >= 0) {
       cart.items[existingIndex].quantity += quantity;
@@ -89,6 +109,14 @@ router.put('/update', auth, async (req, res) => {
     if (quantity <= 0) {
       cart.items.splice(itemIndex, 1);
     } else {
+      // Check stock before updating quantity
+      const product = await SpiritualElement.findById(cart.items[itemIndex].product);
+      if (product && quantity > product.stock) {
+        return res.status(400).json({
+          message: `Only ${product.stock} unit(s) available in stock`,
+          availableStock: product.stock,
+        });
+      }
       cart.items[itemIndex].quantity = quantity;
     }
 

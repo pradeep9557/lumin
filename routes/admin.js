@@ -32,7 +32,9 @@ function toDbSlug(urlSlug) {
  */
 router.get('/stats', async (req, res) => {
   try {
-    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages, totalPosts, totalJournals] = await Promise.all([
+    const [totalUsers, activeUsers, disabledUsers, totalFaqs, totalHerbs, totalCrystals, totalPages, totalPosts, totalJournals,
+      totalOrders, pendingOrders, confirmedOrders, shippedOrders, deliveredOrders, cancelledOrders,
+    ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ isActive: true }),
       User.countDocuments({ isActive: false }),
@@ -42,12 +44,50 @@ router.get('/stats', async (req, res) => {
       PageContent.countDocuments(),
       Post.countDocuments(),
       JournalEntry.countDocuments(),
+      Order.countDocuments(),
+      Order.countDocuments({ status: 'pending' }),
+      Order.countDocuments({ status: 'confirmed' }),
+      Order.countDocuments({ status: 'shipped' }),
+      Order.countDocuments({ status: 'delivered' }),
+      Order.countDocuments({ status: 'cancelled' }),
     ]);
 
     // New users in last 7 days
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
     const newUsersThisWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+
+    // Revenue from delivered/shipped/confirmed orders (not cancelled/refunded)
+    const revenueResult = await Order.aggregate([
+      { $match: { status: { $nin: ['cancelled'] }, paymentStatus: { $ne: 'refunded' } } },
+      { $group: { _id: null, totalRevenue: { $sum: '$totalAmount' } } },
+    ]);
+    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
+
+    // Orders this week
+    const ordersThisWeek = await Order.countDocuments({ createdAt: { $gte: weekAgo } });
+
+    // Recent orders (last 5)
+    const recentOrders = await Order.find()
+      .populate('user', 'fullName email')
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
+
+    // Top selling products
+    const topProducts = await Order.aggregate([
+      { $match: { status: { $nin: ['cancelled'] } } },
+      { $unwind: '$items' },
+      { $group: {
+        _id: '$items.product',
+        name: { $first: '$items.name' },
+        type: { $first: '$items.type' },
+        totalSold: { $sum: '$items.quantity' },
+        totalRevenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
+      }},
+      { $sort: { totalSold: -1 } },
+      { $limit: 5 },
+    ]);
 
     res.json({
       totalUsers,
@@ -60,6 +100,17 @@ router.get('/stats', async (req, res) => {
       totalPages,
       totalPosts,
       totalJournals,
+      // Order stats
+      totalOrders,
+      pendingOrders,
+      confirmedOrders,
+      shippedOrders,
+      deliveredOrders,
+      cancelledOrders,
+      totalRevenue,
+      ordersThisWeek,
+      recentOrders,
+      topProducts,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -253,12 +304,39 @@ router.patch('/orders/:id/status', async (req, res) => {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
+    const previousStatus = order.status;
     order.status = status;
 
     // If shipped and no shippedAt date is set, set it now
     if (status === 'shipped' && (!order.trackingInfo || !order.trackingInfo.shippedAt)) {
       if (!order.trackingInfo) order.trackingInfo = {};
       order.trackingInfo.shippedAt = new Date();
+    }
+
+    // Restore stock when order is cancelled (only if it wasn't already cancelled)
+    if (status === 'cancelled' && previousStatus !== 'cancelled') {
+      for (const item of order.items) {
+        await SpiritualElement.findByIdAndUpdate(item.product, {
+          $inc: { stock: item.quantity },
+        });
+      }
+    }
+
+    // If un-cancelling an order (changing from cancelled to another status), decrement stock again
+    if (previousStatus === 'cancelled' && status !== 'cancelled') {
+      for (const item of order.items) {
+        const product = await SpiritualElement.findById(item.product);
+        if (product && product.stock < item.quantity) {
+          return res.status(400).json({
+            message: `Cannot restore order: ${item.name} only has ${product.stock} unit(s) in stock`,
+          });
+        }
+      }
+      for (const item of order.items) {
+        await SpiritualElement.findByIdAndUpdate(item.product, {
+          $inc: { stock: -item.quantity },
+        });
+      }
     }
 
     await order.save();

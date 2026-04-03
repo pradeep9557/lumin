@@ -19,6 +19,7 @@ const adminRoutes = require('./routes/admin');
 const settingsRoutes = require('./routes/settings');
 const cartRoutes = require('./routes/cart');
 const orderRoutes = require('./routes/orders');
+const paymentRoutes = require('./routes/payments');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +52,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/admin/settings', settingsRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/payments', paymentRoutes);
 
 app.get('/api/health', (req, res) => {
   const dbState = mongoose.connection.readyState; // 0=disconnected, 1=connected, 2=connecting, 3=disconnecting

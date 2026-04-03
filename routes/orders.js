@@ -8,7 +8,7 @@ const SpiritualElement = require('../models/SpiritualElement');
 // POST /api/orders — Create a new order from cart
 router.post('/', auth, async (req, res) => {
   try {
-    const { shippingInfo, notes } = req.body;
+    const { shippingInfo, notes, paymentMethod } = req.body;
 
     if (!shippingInfo) {
       return res.status(400).json({ message: 'Shipping information is required' });
@@ -65,6 +65,7 @@ router.post('/', auth, async (req, res) => {
       })),
       shippingInfo,
       totalAmount: cart.totalAmount,
+      paymentMethod: paymentMethod || '',
       notes: notes || '',
     });
 

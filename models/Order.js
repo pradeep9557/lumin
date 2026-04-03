@@ -36,6 +36,11 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'paid', 'failed', 'refunded'],
     default: 'pending',
   },
+  paymentMethod: {
+    type: String,
+    enum: ['cod', 'stripe', 'paypal', 'razorpay', ''],
+    default: '',
+  },
   notes: { type: String, default: '' },
   trackingInfo: {
     trackingNumber: { type: String, default: '' },

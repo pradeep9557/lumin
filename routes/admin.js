@@ -6,6 +6,7 @@ const User = require('../models/User');
 const JournalEntry = require('../models/JournalEntry');
 const Post = require('../models/Post');
 const Order = require('../models/Order');
+const PaymentGateway = require('../models/PaymentGateway');
 const { adminAuth } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -744,6 +745,149 @@ router.delete('/posts/:postId/comments/:commentId', async (req, res) => {
     post.comments = post.comments.filter((c) => c._id.toString() !== req.params.commentId);
     await post.save();
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ── Payment Gateways ────────────────────────────────────────
+// GET /admin/payments/gateways — list all gateways
+router.get('/payments/gateways', async (req, res) => {
+  try {
+    await PaymentGateway.seedDefaults();
+    const gateways = await PaymentGateway.find().sort({ name: 1 });
+    // Map to the shape the admin frontend expects
+    const data = gateways.map(g => ({
+      id: g.gatewayId,
+      _id: g._id,
+      name: g.name,
+      logo: g.logo,
+      status: g.status,
+      environment: g.environment,
+      currencies: g.currencies,
+      publicKey: g.publicKey,
+      secretKey: g.secretKey ? '••••••••' : '',
+      recurringBilling: g.recurringBilling,
+      webhooksEnabled: g.webhooksEnabled,
+      transactionFee: g.transactionFee,
+      retryAttempts: g.retryAttempts,
+      minCharge: g.minCharge,
+      maxCharge: g.maxCharge,
+    }));
+    res.json({ gateways: data });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /admin/payments/gateways/:id — single gateway
+router.get('/payments/gateways/:id', async (req, res) => {
+  try {
+    const gateway = await PaymentGateway.findOne({ gatewayId: req.params.id });
+    if (!gateway) return res.status(404).json({ message: 'Gateway not found' });
+    res.json({ gateway });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /admin/payments/gateways/:id/connect — connect gateway with keys
+router.post('/payments/gateways/:id/connect', async (req, res) => {
+  try {
+    const { publicKey, secretKey, environment, currencies, recurringBilling, webhooksEnabled,
+            transactionFee, retryAttempts, minCharge, maxCharge } = req.body;
+
+    if (!publicKey || !secretKey) {
+      return res.status(400).json({ message: 'Public key and secret key are required' });
+    }
+
+    const gateway = await PaymentGateway.findOne({ gatewayId: req.params.id });
+    if (!gateway) return res.status(404).json({ message: 'Gateway not found' });
+
+    gateway.publicKey = publicKey;
+    gateway.secretKey = secretKey;
+    gateway.status = 'connected';
+    if (environment) gateway.environment = environment;
+    if (currencies) gateway.currencies = currencies;
+    if (recurringBilling !== undefined) gateway.recurringBilling = recurringBilling;
+    if (webhooksEnabled !== undefined) gateway.webhooksEnabled = webhooksEnabled;
+    if (transactionFee) gateway.transactionFee = transactionFee;
+    if (retryAttempts) gateway.retryAttempts = retryAttempts;
+    if (minCharge) gateway.minCharge = minCharge;
+    if (maxCharge) gateway.maxCharge = maxCharge;
+
+    await gateway.save();
+    res.json({ ok: true, message: `${gateway.name} connected successfully` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// PUT /admin/payments/gateways/:id/configure — update config of connected gateway
+router.put('/payments/gateways/:id/configure', async (req, res) => {
+  try {
+    const gateway = await PaymentGateway.findOne({ gatewayId: req.params.id });
+    if (!gateway) return res.status(404).json({ message: 'Gateway not found' });
+
+    const allowed = ['publicKey', 'secretKey', 'environment', 'currencies', 'recurringBilling',
+      'webhooksEnabled', 'transactionFee', 'retryAttempts', 'minCharge', 'maxCharge'];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) gateway[key] = req.body[key];
+    }
+    await gateway.save();
+    res.json({ ok: true, message: `${gateway.name} updated` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /admin/payments/gateways/:id/disconnect — disconnect gateway
+router.delete('/payments/gateways/:id/disconnect', async (req, res) => {
+  try {
+    const gateway = await PaymentGateway.findOne({ gatewayId: req.params.id });
+    if (!gateway) return res.status(404).json({ message: 'Gateway not found' });
+
+    gateway.status = 'disconnected';
+    gateway.publicKey = '';
+    gateway.secretKey = '';
+    await gateway.save();
+    res.json({ ok: true, message: `${gateway.name} disconnected` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// POST /admin/payments/test-connection — test payment connection
+router.post('/payments/test-connection', async (req, res) => {
+  try {
+    const connected = await PaymentGateway.find({ status: 'connected' });
+    if (connected.length === 0) {
+      return res.status(400).json({ message: 'No gateways connected' });
+    }
+    res.json({ ok: true, message: 'Connection successful', gateways: connected.map(g => g.name) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// GET /admin/payments/transactions — list transactions (placeholder)
+router.get('/payments/transactions', async (req, res) => {
+  try {
+    // Future: query a Transaction collection
+    // For now return orders as transaction-like data
+    const orders = await Order.find({ paymentStatus: { $ne: 'pending' } })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .populate('user', 'fullName email');
+    const transactions = orders.map(o => ({
+      id: o.orderId,
+      user: o.user?.fullName || 'Unknown',
+      amount: `$${o.totalAmount.toFixed(2)}`,
+      status: o.paymentStatus === 'paid' ? 'success' : o.paymentStatus,
+      gateway: 'Stripe',
+      date: o.createdAt,
+    }));
+    res.json({ transactions });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

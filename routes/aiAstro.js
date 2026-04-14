@@ -12,8 +12,8 @@ let genAI = null;
 let chatModel = null;
 let embeddingModel = null;
 
-// Chat model fallback chain: try 2.5-flash first, fall back to 2.0-flash-lite
-const CHAT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+// Chat model fallback chain: try 2.5-flash first, then 2.5-flash-lite
+const CHAT_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 let chatModels = [];
 
 if (GEMINI_API_KEY) {

@@ -141,7 +141,7 @@ function analyzeQuery(message, chartData) {
 
 // ─── Build Gemini Prompt ─────────────────────────────────────────────────────
 
-function buildPrompt(userMessage, retrievedChunks, contextHints, conversationHistory) {
+function buildPrompt(userMessage, retrievedChunks, contextHints, conversationHistory, birthData) {
   const bookKnowledge = retrievedChunks
     .map((c, i) => `[Source ${i + 1}: "${c.source}" — ${c.category}]\n${c.text}`)
     .join('\n\n---\n\n');
@@ -151,19 +151,46 @@ function buildPrompt(userMessage, retrievedChunks, contextHints, conversationHis
     .map(m => `${m.role === 'user' ? 'User' : 'Astrologer'}: ${m.content}`)
     .join('\n');
 
+  // Build birth data context for personalized predictions
+  let birthContext = '';
+  if (birthData && birthData.dateOfBirth) {
+    const dob = new Date(birthData.dateOfBirth);
+    const readingFor = birthData.readingFor === 'self'
+      ? 'the user themselves'
+      : `the user's ${birthData.readingFor}`;
+
+    birthContext = `\nBIRTH DATA (this reading is for ${readingFor}):
+- Date of Birth: ${dob.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`;
+
+    if (birthData.timeOfBirth) {
+      birthContext += `\n- Time of Birth: ${birthData.timeOfBirth}`;
+    }
+    if (birthData.placeOfBirth) {
+      birthContext += `\n- Place of Birth: ${birthData.placeOfBirth}`;
+    }
+
+    // Calculate approximate sun sign from DOB
+    const month = dob.getMonth() + 1;
+    const day = dob.getDate();
+    const sunSign = getSunSignFromDate(month, day);
+    birthContext += `\n- Approximate Sun Sign: ${sunSign}`;
+    birthContext += `\n\nIMPORTANT: Use this birth data to calculate planetary positions and give SPECIFIC, PERSONALIZED predictions. Reference their sun sign, possible moon sign tendencies, and current transits affecting their chart. Do NOT give generic answers — tailor everything to this person's birth chart.\n`;
+  }
+
   return `You are an expert Vedic and Western astrologer with deep knowledge from classical and modern astrological texts. You provide insightful, nuanced, and personalized readings.
 
 IMPORTANT GUIDELINES:
 - Ground your interpretations in the reference material provided below
 - Blend Western (Tropical) and Vedic (Sidereal) perspectives when relevant
-- Be specific and detailed — reference actual planetary positions from the user's chart
+- Be specific and detailed — reference actual planetary positions based on the person's birth data
 - Use proper astrological terminology but explain complex concepts
 - Be empathetic and constructive, especially with challenging aspects
 - If the reference material doesn't cover the exact topic, use your general astrology knowledge but note this
 - Never make definitive claims about health, legal, or financial outcomes
 - Format your response with clear structure using bold and bullet points when helpful
 - Keep responses conversational but substantive (300-600 words ideal)
-
+- ALWAYS personalize the reading based on birth data when provided
+${birthContext}
 ${contextHints ? `\nCONTEXT:\n${contextHints}\n` : ''}
 ${historyText ? `\nCONVERSATION HISTORY:\n${historyText}\n` : ''}
 
@@ -175,11 +202,27 @@ USER'S QUESTION: ${userMessage}
 Provide a detailed, personalized astrological interpretation:`;
 }
 
+// Helper: get approximate sun sign from month/day
+function getSunSignFromDate(month, day) {
+  if ((month === 3 && day >= 21) || (month === 4 && day <= 19)) return 'Aries';
+  if ((month === 4 && day >= 20) || (month === 5 && day <= 20)) return 'Taurus';
+  if ((month === 5 && day >= 21) || (month === 6 && day <= 20)) return 'Gemini';
+  if ((month === 6 && day >= 21) || (month === 7 && day <= 22)) return 'Cancer';
+  if ((month === 7 && day >= 23) || (month === 8 && day <= 22)) return 'Leo';
+  if ((month === 8 && day >= 23) || (month === 9 && day <= 22)) return 'Virgo';
+  if ((month === 9 && day >= 23) || (month === 10 && day <= 22)) return 'Libra';
+  if ((month === 10 && day >= 23) || (month === 11 && day <= 21)) return 'Scorpio';
+  if ((month === 11 && day >= 22) || (month === 12 && day <= 21)) return 'Sagittarius';
+  if ((month === 12 && day >= 22) || (month === 1 && day <= 19)) return 'Capricorn';
+  if ((month === 1 && day >= 20) || (month === 2 && day <= 18)) return 'Aquarius';
+  return 'Pisces';
+}
+
 // ─── Chat Endpoint ───────────────────────────────────────────────────────────
 
 router.post('/chat', auth, async (req, res) => {
   try {
-    const { message, chartData, conversationHistory = [] } = req.body;
+    const { message, chartData, birthData, conversationHistory = [] } = req.body;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' });
@@ -193,8 +236,12 @@ router.post('/chat', auth, async (req, res) => {
       });
     }
 
-    // 1. Analyze the query
-    const { filters, contextHints } = analyzeQuery(message, chartData);
+    // 1. Analyze the query (merge birthData into chartData for compatibility)
+    const mergedChartData = chartData || {};
+    if (birthData) {
+      mergedChartData.birthData = birthData;
+    }
+    const { filters, contextHints } = analyzeQuery(message, mergedChartData);
 
     // 2. Generate embedding for the user's query
     let retrievedChunks = [];
@@ -221,8 +268,8 @@ router.post('/chat', auth, async (req, res) => {
       retrievedChunks = await searchByText(message, 6);
     }
 
-    // 4. Build prompt with retrieved context
-    const prompt = buildPrompt(message, retrievedChunks, contextHints, conversationHistory);
+    // 4. Build prompt with retrieved context and birth data
+    const prompt = buildPrompt(message, retrievedChunks, contextHints, conversationHistory, birthData);
 
     // 5. Generate response from Gemini (with fallback models)
     const reply = await generateWithFallback(prompt);
